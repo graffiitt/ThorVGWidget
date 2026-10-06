@@ -47,7 +47,7 @@ ThorVGWidget::~ThorVGWidget() {
 
 bool ThorVGWidget::setSource(const QString &filePath) {
   pause();
-  pausedElapsedMs_ = 0;
+  playheadSeconds_ = 0.0;
   canvas_.reset();
   animation_.reset();
   frameBuffer_ = {};
@@ -105,7 +105,13 @@ void ThorVGWidget::play() {
   if (!animation_ || playing_)
     return;
 
+  if (!looping_ && playheadSeconds_ >= animation_->duration()) {
+    playheadSeconds_ = 0.0;
+    if (!renderFrame(0.0f))
+      return;
+  }
   playing_ = true;
+  playbackBaseMs_ = 0;
   playbackClock_.restart();
   timer_.start();
 }
@@ -114,7 +120,13 @@ void ThorVGWidget::pause() {
   if (!playing_)
     return;
 
-  pausedElapsedMs_ += playbackClock_.elapsed();
+  playbackBaseMs_ += playbackClock_.elapsed();
+  if (animation_)
+    playheadSeconds_ = std::min(
+        static_cast<double>(animation_->duration()),
+        playheadSeconds_ +
+            static_cast<double>(playbackBaseMs_) * playbackSpeed_ / 1000.0);
+  playbackBaseMs_ = 0;
   timer_.stop();
   playing_ = false;
 }
@@ -122,12 +134,136 @@ void ThorVGWidget::pause() {
 void ThorVGWidget::stop() {
   timer_.stop();
   playing_ = false;
-  pausedElapsedMs_ = 0;
+  playheadSeconds_ = 0.0;
   if (animation_)
     renderFrame(0.0f);
 }
 
 bool ThorVGWidget::isPlaying() const { return playing_; }
+
+void ThorVGWidget::setLooping(bool enabled) { looping_ = enabled; }
+
+bool ThorVGWidget::isLooping() const { return looping_; }
+
+bool ThorVGWidget::setPlaybackSpeed(float speed) {
+  if (!std::isfinite(speed) || speed <= 0.0f) {
+    setError(QStringLiteral("Скорость воспроизведения должна быть больше нуля"));
+    return false;
+  }
+
+  if (playing_) {
+    playbackBaseMs_ += playbackClock_.elapsed();
+    playheadSeconds_ +=
+        static_cast<double>(playbackBaseMs_) * playbackSpeed_ / 1000.0;
+    playbackBaseMs_ = 0;
+    playbackClock_.restart();
+  }
+  playbackSpeed_ = speed;
+  return true;
+}
+
+float ThorVGWidget::playbackSpeed() const { return playbackSpeed_; }
+
+bool ThorVGWidget::seekFrame(float frameNumber) {
+  if (!animation_ || !std::isfinite(frameNumber)) {
+    setError(QStringLiteral("Нельзя перейти к кадру: анимация не загружена"));
+    return false;
+  }
+
+  const float maxFrame = std::max(0.0f, animation_->totalFrame() - 1.0f);
+  const float clampedFrame = std::clamp(frameNumber, 0.0f, maxFrame);
+  playheadSeconds_ = animation_->totalFrame() > 0.0f
+                         ? static_cast<double>(animation_->duration()) *
+                               clampedFrame / animation_->totalFrame()
+                         : 0.0;
+  if (playing_) {
+    playbackBaseMs_ = 0;
+    playbackClock_.restart();
+  }
+  return renderFrame(clampedFrame);
+}
+
+float ThorVGWidget::currentFrame() const {
+  return animation_ ? animation_->curFrame() : 0.0f;
+}
+
+float ThorVGWidget::totalFrames() const {
+  return animation_ ? animation_->totalFrame() : 0.0f;
+}
+
+float ThorVGWidget::duration() const {
+  return animation_ ? animation_->duration() : 0.0f;
+}
+
+QStringList ThorVGWidget::markers() const {
+  QStringList names;
+  if (!animation_)
+    return names;
+
+  const uint32_t count = animation_->markersCnt();
+  for (uint32_t index = 0; index < count; ++index) {
+    const char *name = animation_->marker(index, nullptr, nullptr);
+    if (name)
+      names.append(QString::fromUtf8(name));
+  }
+  return names;
+}
+
+bool ThorVGWidget::setSegment(float beginFrame, float endFrame) {
+  if (!animation_ || !std::isfinite(beginFrame) ||
+      !std::isfinite(endFrame)) {
+    setError(QStringLiteral("Неверный диапазон сегмента анимации"));
+    return false;
+  }
+
+  pause();
+  const auto result =
+      static_cast<tvg::Animation *>(animation_.get())->segment(beginFrame,
+                                                                endFrame);
+  if (result != tvg::Result::Success) {
+    setError(QStringLiteral("Не удалось задать сегмент (код ThorVG: %1)")
+                 .arg(static_cast<int>(result)));
+    return false;
+  }
+  playheadSeconds_ = 0.0;
+  return renderFrame(0.0f);
+}
+
+bool ThorVGWidget::setMarkerSegment(const QString &markerName) {
+  if (!animation_ || markerName.isEmpty()) {
+    setError(QStringLiteral("Не удалось выбрать маркер анимации"));
+    return false;
+  }
+
+  pause();
+  const QByteArray encodedName = markerName.toUtf8();
+  const auto result = animation_->segment(encodedName.constData());
+  if (result != tvg::Result::Success) {
+    setError(QStringLiteral("Не удалось выбрать маркер «%1» (код ThorVG: %2)")
+                 .arg(markerName)
+                 .arg(static_cast<int>(result)));
+    return false;
+  }
+  playheadSeconds_ = 0.0;
+  return renderFrame(0.0f);
+}
+
+bool ThorVGWidget::clearSegment() {
+  if (!animation_) {
+    setError(QStringLiteral("Анимация не загружена"));
+    return false;
+  }
+
+  pause();
+  const auto result = animation_->segment(static_cast<const char *>(nullptr));
+  if (result != tvg::Result::Success) {
+    setError(QStringLiteral("Не удалось сбросить сегмент (код ThorVG: %1)")
+                 .arg(static_cast<int>(result)));
+    return false;
+  }
+  playheadSeconds_ = 0.0;
+  return renderFrame(0.0f);
+}
 
 void ThorVGWidget::paintEvent(QPaintEvent *event) {
   Q_UNUSED(event);
@@ -279,11 +415,27 @@ void ThorVGWidget::updateFrame() {
   if (!animation_)
     return;
 
-  const qint64 elapsedMs = pausedElapsedMs_ + playbackClock_.elapsed();
   const float duration = animation_->duration();
-  const float elapsedSeconds = static_cast<float>(elapsedMs) / 1000.0f;
-  const float progress = std::fmod(elapsedSeconds, duration) / duration;
-  if (!renderFrame(progress * animation_->totalFrame()))
+  if (duration <= 0.0f)
+    return;
+
+  const double elapsedSeconds =
+      static_cast<double>(playbackBaseMs_ + playbackClock_.elapsed()) *
+      playbackSpeed_ / 1000.0;
+  const double position = playheadSeconds_ + elapsedSeconds;
+  if (!looping_ && position >= duration) {
+    const float finalFrame = std::max(0.0f, animation_->totalFrame() - 1.0f);
+    if (renderFrame(finalFrame)) {
+      playheadSeconds_ = duration;
+      pause();
+    }
+    return;
+  }
+
+  const double localPosition = looping_ ? std::fmod(position, duration) : position;
+  const float frameNumber = static_cast<float>(
+      localPosition / duration * animation_->totalFrame());
+  if (!renderFrame(frameNumber))
     pause();
 }
 

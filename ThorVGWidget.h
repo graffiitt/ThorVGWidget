@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QImage>
+#include <QStringList>
 #include <QTimer>
 #include <QWidget>
 
@@ -24,6 +25,18 @@ public:
   void pause();
   void stop();
   bool isPlaying() const;
+  void setLooping(bool enabled);
+  bool isLooping() const;
+  bool setPlaybackSpeed(float speed);
+  float playbackSpeed() const;
+  bool seekFrame(float frameNumber);
+  float currentFrame() const;
+  float totalFrames() const;
+  float duration() const;
+  QStringList markers() const;
+  bool setSegment(float beginFrame, float endFrame);
+  bool setMarkerSegment(const QString &markerName);
+  bool clearSegment();
 
 protected:
   void paintEvent(QPaintEvent *event) override;
@@ -37,8 +50,11 @@ private:
 
   QTimer timer_;
   QElapsedTimer playbackClock_;
-  qint64 pausedElapsedMs_ = 0;
+  qint64 playbackBaseMs_ = 0;
+  double playheadSeconds_ = 0.0;
+  float playbackSpeed_ = 1.0f;
   bool playing_ = false;
+  bool looping_ = true;
   bool thorvgInitialized_ = false;
   QString errorString_;
   QImage frameBuffer_;
