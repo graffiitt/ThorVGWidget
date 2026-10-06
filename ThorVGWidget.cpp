@@ -29,10 +29,19 @@ ThorVGWidget::ThorVGWidget(QWidget *parent) : QWidget(parent) {
 
 ThorVGWidget::~ThorVGWidget() {
   timer_.stop();
+  if (canvas_ && canvas_->sync() != tvg::Result::Success)
+    qWarning() << "Не удалось завершить задачи ThorVG перед закрытием виджета";
   canvas_.reset();
   animation_.reset();
-  if (thorvgInitialized_ && tvg::Initializer::term() != tvg::Result::Success)
-    qWarning() << "Не удалось корректно завершить ThorVG";
+  if (thorvgInitialized_) {
+    const auto result = tvg::Initializer::term();
+    if (result == tvg::Result::InsufficientCondition) {
+      qInfo() << "ThorVG уже был завершён";
+    } else if (result != tvg::Result::Success) {
+      qWarning() << "Не удалось завершить ThorVG, код:"
+                 << static_cast<int>(result);
+    }
+  }
 }
 
 bool ThorVGWidget::setSource(const QString &filePath) {
@@ -157,32 +166,38 @@ bool ThorVGWidget::initializeCanvas() {
       qFuzzyCompare(frameBuffer_.devicePixelRatio(), devicePixelRatio) && canvas_)
     return true;
 
-  canvas_.reset();
-  frameBuffer_ = QImage(pixelWidth, pixelHeight, QImage::Format_ARGB32_Premultiplied);
-  frameBuffer_.setDevicePixelRatio(devicePixelRatio);
-  if (frameBuffer_.isNull()) {
+  QImage newFrameBuffer(pixelWidth, pixelHeight,
+                        QImage::Format_ARGB32_Premultiplied);
+  newFrameBuffer.setDevicePixelRatio(devicePixelRatio);
+  if (newFrameBuffer.isNull()) {
     setError(QStringLiteral("Не удалось выделить буфер для ThorVG"));
     return false;
   }
 
-  canvas_.reset(tvg::SwCanvas::gen());
-  if (!canvas_) {
-    frameBuffer_ = {};
-    setError(QStringLiteral("Не удалось создать software canvas ThorVG"));
-    return false;
+  const bool createCanvas = !canvas_;
+  if (createCanvas) {
+    canvas_.reset(tvg::SwCanvas::gen());
+    if (!canvas_) {
+      setError(QStringLiteral("Не удалось создать software canvas ThorVG"));
+      return false;
+    }
   }
 
   const auto targetResult = canvas_->target(
-      reinterpret_cast<uint32_t *>(frameBuffer_.bits()),
-      static_cast<uint32_t>(frameBuffer_.bytesPerLine() / 4), pixelWidth,
+      reinterpret_cast<uint32_t *>(newFrameBuffer.bits()),
+      static_cast<uint32_t>(newFrameBuffer.bytesPerLine() / 4), pixelWidth,
       pixelHeight, tvg::ColorSpace::ARGB8888);
   if (targetResult != tvg::Result::Success) {
-    canvas_.reset();
-    frameBuffer_ = {};
+    if (createCanvas)
+      canvas_.reset();
     setError(QStringLiteral("Не удалось настроить буфер ThorVG (код %1)")
                  .arg(static_cast<int>(targetResult)));
     return false;
   }
+
+  frameBuffer_ = std::move(newFrameBuffer);
+  if (!createCanvas)
+    return true;
 
   auto *picture = animation_->picture();
   if (picture->ref() == 0) {
