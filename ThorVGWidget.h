@@ -8,7 +8,7 @@
 #include <memory>
 
 namespace tvg {
-class Animation;
+class LottieAnimation;
 class SwCanvas;
 }
 
@@ -42,7 +42,7 @@ private:
   bool thorvgInitialized_ = false;
   QString errorString_;
   QImage frameBuffer_;
-  std::unique_ptr<tvg::Animation> animation_;
+  std::unique_ptr<tvg::LottieAnimation> animation_;
   std::unique_ptr<tvg::SwCanvas> canvas_;
   float sourceWidth_ = 0.0f;
   float sourceHeight_ = 0.0f;

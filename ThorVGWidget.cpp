@@ -7,6 +7,7 @@
 #include <QDebug>
 
 #include <thorvg.h>
+#include <thorvg_lottie.h>
 
 #include <algorithm>
 #include <cmath>
@@ -60,7 +61,7 @@ bool ThorVGWidget::setSource(const QString &filePath) {
     return false;
   }
 
-  animation_.reset(tvg::Animation::gen());
+  animation_.reset(tvg::LottieAnimation::gen());
   if (!animation_) {
     setError(QStringLiteral("Не удалось создать анимацию ThorVG"));
     return false;
