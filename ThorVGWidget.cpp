@@ -1,16 +1,17 @@
 #include "ThorVGWidget.h"
 
+#include <QDebug>
 #include <QFile>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>
-#include <QDebug>
 
 #include <thorvg.h>
 #include <thorvg_lottie.h>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 ThorVGWidget::ThorVGWidget(QWidget *parent) : QWidget(parent) {
   setMinimumSize(64, 64);
@@ -47,7 +48,7 @@ ThorVGWidget::~ThorVGWidget() {
 
 bool ThorVGWidget::setSource(const QString &filePath) {
   pause();
-  playheadSeconds_ = 0.0;
+  playbackFrame_ = 0.0;
   canvas_.reset();
   animation_.reset();
   frameBuffer_ = {};
@@ -85,13 +86,18 @@ bool ThorVGWidget::setSource(const QString &filePath) {
                  .arg(static_cast<int>(sizeResult)));
     return false;
   }
-  if (sourceWidth_ <= 0.0f || sourceHeight_ <= 0.0f ||
-      animation_->totalFrame() <= 0.0f || animation_->duration() <= 0.0f) {
+  const float totalFrames = animation_->totalFrame();
+  const float duration = animation_->duration();
+  if (!std::isfinite(sourceWidth_) || !std::isfinite(sourceHeight_) ||
+      !std::isfinite(totalFrames) || !std::isfinite(duration) ||
+      sourceWidth_ <= 0.0f || sourceHeight_ <= 0.0f || totalFrames <= 0.0f ||
+      duration <= 0.0f) {
     animation_.reset();
-    setError(QStringLiteral("Файл не содержит корректную анимацию"));
+    setError(QStringLiteral("Файл содержит некорректные параметры анимации"));
     return false;
   }
 
+  updateTimerInterval();
   errorString_.clear();
   if (!renderFrame(0.0f))
     return false;
@@ -101,18 +107,25 @@ bool ThorVGWidget::setSource(const QString &filePath) {
 
 QString ThorVGWidget::errorString() const { return errorString_; }
 
+void ThorVGWidget::setTransparentBackground(bool enabled) {
+  if (transparentBackground_ == enabled)
+    return;
+  transparentBackground_ = enabled;
+  setAttribute(Qt::WA_OpaquePaintEvent, !enabled);
+  setAttribute(Qt::WA_TranslucentBackground, enabled);
+  update();
+}
+
 void ThorVGWidget::play() {
   if (!animation_ || playing_)
     return;
 
-  if (!looping_ && playheadSeconds_ >= animation_->duration()) {
-    playheadSeconds_ = 0.0;
+  if (!looping_ && playbackFrame_ >= animation_->totalFrame()) {
+    playbackFrame_ = 0.0;
     if (!renderFrame(0.0f))
       return;
   }
   playing_ = true;
-  playbackBaseMs_ = 0;
-  playbackClock_.restart();
   timer_.start();
 }
 
@@ -120,13 +133,6 @@ void ThorVGWidget::pause() {
   if (!playing_)
     return;
 
-  playbackBaseMs_ += playbackClock_.elapsed();
-  if (animation_)
-    playheadSeconds_ = std::min(
-        static_cast<double>(animation_->duration()),
-        playheadSeconds_ +
-            static_cast<double>(playbackBaseMs_) * playbackSpeed_ / 1000.0);
-  playbackBaseMs_ = 0;
   timer_.stop();
   playing_ = false;
 }
@@ -134,7 +140,7 @@ void ThorVGWidget::pause() {
 void ThorVGWidget::stop() {
   timer_.stop();
   playing_ = false;
-  playheadSeconds_ = 0.0;
+  playbackFrame_ = 0.0;
   if (animation_)
     renderFrame(0.0f);
 }
@@ -145,25 +151,6 @@ void ThorVGWidget::setLooping(bool enabled) { looping_ = enabled; }
 
 bool ThorVGWidget::isLooping() const { return looping_; }
 
-bool ThorVGWidget::setPlaybackSpeed(float speed) {
-  if (!std::isfinite(speed) || speed <= 0.0f) {
-    setError(QStringLiteral("Скорость воспроизведения должна быть больше нуля"));
-    return false;
-  }
-
-  if (playing_) {
-    playbackBaseMs_ += playbackClock_.elapsed();
-    playheadSeconds_ +=
-        static_cast<double>(playbackBaseMs_) * playbackSpeed_ / 1000.0;
-    playbackBaseMs_ = 0;
-    playbackClock_.restart();
-  }
-  playbackSpeed_ = speed;
-  return true;
-}
-
-float ThorVGWidget::playbackSpeed() const { return playbackSpeed_; }
-
 bool ThorVGWidget::seekFrame(float frameNumber) {
   if (!animation_ || !std::isfinite(frameNumber)) {
     setError(QStringLiteral("Нельзя перейти к кадру: анимация не загружена"));
@@ -172,14 +159,7 @@ bool ThorVGWidget::seekFrame(float frameNumber) {
 
   const float maxFrame = std::max(0.0f, animation_->totalFrame() - 1.0f);
   const float clampedFrame = std::clamp(frameNumber, 0.0f, maxFrame);
-  playheadSeconds_ = animation_->totalFrame() > 0.0f
-                         ? static_cast<double>(animation_->duration()) *
-                               clampedFrame / animation_->totalFrame()
-                         : 0.0;
-  if (playing_) {
-    playbackBaseMs_ = 0;
-    playbackClock_.restart();
-  }
+  playbackFrame_ = clampedFrame;
   return renderFrame(clampedFrame);
 }
 
@@ -225,7 +205,8 @@ bool ThorVGWidget::setSegment(float beginFrame, float endFrame) {
                  .arg(static_cast<int>(result)));
     return false;
   }
-  playheadSeconds_ = 0.0;
+  playbackFrame_ = 0.0;
+  updateTimerInterval();
   return renderFrame(0.0f);
 }
 
@@ -244,7 +225,8 @@ bool ThorVGWidget::setMarkerSegment(const QString &markerName) {
                  .arg(static_cast<int>(result)));
     return false;
   }
-  playheadSeconds_ = 0.0;
+  playbackFrame_ = 0.0;
+  updateTimerInterval();
   return renderFrame(0.0f);
 }
 
@@ -261,7 +243,8 @@ bool ThorVGWidget::clearSegment() {
                  .arg(static_cast<int>(result)));
     return false;
   }
-  playheadSeconds_ = 0.0;
+  playbackFrame_ = 0.0;
+  updateTimerInterval();
   return renderFrame(0.0f);
 }
 
@@ -269,7 +252,8 @@ void ThorVGWidget::paintEvent(QPaintEvent *event) {
   Q_UNUSED(event);
 
   QPainter painter(this);
-  painter.fillRect(rect(), palette().window());
+  if (!transparentBackground_)
+    painter.fillRect(rect(), palette().window());
   if (!frameBuffer_.isNull()) {
     const QSizeF logicalSize(frameBuffer_.width() / frameBuffer_.devicePixelRatio(),
                              frameBuffer_.height() / frameBuffer_.devicePixelRatio());
@@ -279,6 +263,9 @@ void ThorVGWidget::paintEvent(QPaintEvent *event) {
     painter.drawImage(target, frameBuffer_);
     return;
   }
+
+  if (transparentBackground_)
+    return;
 
   const QString message =
       errorString_.isEmpty()
@@ -357,6 +344,10 @@ bool ThorVGWidget::initializeCanvas() {
 bool ThorVGWidget::renderFrame(float frameNumber) {
   if (!animation_ || !initializeCanvas())
     return false;
+  if (!std::isfinite(frameNumber)) {
+    setError(QStringLiteral("Номер кадра анимации не является конечным числом"));
+    return false;
+  }
 
   const int pixelWidth = frameBuffer_.width();
   const int pixelHeight = frameBuffer_.height();
@@ -411,32 +402,58 @@ bool ThorVGWidget::renderFrame(float frameNumber) {
   return true;
 }
 
-void ThorVGWidget::updateFrame() {
+void ThorVGWidget::updateTimerInterval() {
   if (!animation_)
     return;
 
-  const float duration = animation_->duration();
-  if (duration <= 0.0f)
-    return;
-
-  const double elapsedSeconds =
-      static_cast<double>(playbackBaseMs_ + playbackClock_.elapsed()) *
-      playbackSpeed_ / 1000.0;
-  const double position = playheadSeconds_ + elapsedSeconds;
-  if (!looping_ && position >= duration) {
-    const float finalFrame = std::max(0.0f, animation_->totalFrame() - 1.0f);
-    if (renderFrame(finalFrame)) {
-      playheadSeconds_ = duration;
-      pause();
-    }
+  const double framesPerSecond =
+      animation_->totalFrame() / animation_->duration();
+  if (!std::isfinite(framesPerSecond) || framesPerSecond <= 0.0) {
+    timer_.stop();
+    playing_ = false;
+    setError(QStringLiteral("Некорректная частота кадров анимации"));
     return;
   }
 
-  const double localPosition = looping_ ? std::fmod(position, duration) : position;
-  const float frameNumber = static_cast<float>(
-      localPosition / duration * animation_->totalFrame());
-  if (!renderFrame(frameNumber))
-    pause();
+  const double intervalMs = 1000.0 / framesPerSecond;
+  if (!std::isfinite(intervalMs) ||
+      intervalMs >= static_cast<double>(std::numeric_limits<int>::max())) {
+    timer_.setInterval(std::numeric_limits<int>::max());
+    return;
+  }
+
+  timer_.setInterval(qMax(1, qRound(intervalMs)));
+}
+
+void ThorVGWidget::updateFrame() {
+  if (!animation_ || !playing_)
+    return;
+
+  const double totalFrames = animation_->totalFrame();
+  const double duration = animation_->duration();
+  if (!std::isfinite(totalFrames) || !std::isfinite(duration) ||
+      totalFrames <= 0.0 || duration <= 0.0) {
+    timer_.stop();
+    playing_ = false;
+    setError(QStringLiteral("Некорректные параметры анимации во время воспроизведения"));
+    return;
+  }
+
+  playbackFrame_ += 1.0;
+  if (!looping_ && playbackFrame_ >= totalFrames) {
+    playbackFrame_ = totalFrames;
+    timer_.stop();
+    playing_ = false;
+    renderFrame(static_cast<float>(std::max(0.0, totalFrames - 1.0)));
+    return;
+  }
+
+  if (looping_)
+    playbackFrame_ = std::fmod(playbackFrame_, totalFrames);
+  if (!renderFrame(static_cast<float>(playbackFrame_))) {
+    timer_.stop();
+    playing_ = false;
+  }
 }
 
 void ThorVGWidget::setError(const QString &message) {

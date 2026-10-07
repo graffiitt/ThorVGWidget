@@ -11,32 +11,16 @@ find_package(Qt6 COMPONENTS Widgets REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(THORVG REQUIRED IMPORTED_TARGET thorvg-1)
 
-file(GLOB CPP_FILE "*.cpp")
-message("Adding ${PROJECT_NAME} CPP files: " )
-foreach(source ${CPP_FILE})
-    message("  - " ${source})
-endforeach(source)
- 
-file(GLOB H_FILE "*.h")
-message("Adding ${PROJECT_NAME} H files: " )
-foreach(source ${H_FILE})
-    message("  - " ${source})
-endforeach(source)
-
-file(GLOB UI_FILE "*.ui")
-message("Adding ${PROJECT_NAME} UI files: " )
-foreach(source ${UI_FILE})
-    message("  - " ${source})
-endforeach(source)
-
-
 add_executable(
     ${PROJECT_NAME} MACOSX_BUNDLE
-    ${CPP_FILE}
-    ${H_FILE}
-    ${UI_FILE}
+    main.cpp
+    DemoWindow.cpp
+    DemoWindow.h
+    ThorVGWidget.cpp
+    ThorVGWidget.h
     )
  
 target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES} Qt6::Widgets PkgConfig::THORVG)
 target_include_directories(${PROJECT_NAME} INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
   
+set(MACOSX_BUNDLE_GUI_IDENTIFIER "your.bundle.identifier")

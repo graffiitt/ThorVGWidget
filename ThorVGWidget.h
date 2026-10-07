@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QElapsedTimer>
 #include <QImage>
 #include <QStringList>
 #include <QTimer>
@@ -9,8 +8,8 @@
 #include <memory>
 
 namespace tvg {
-class LottieAnimation;
-class SwCanvas;
+struct LottieAnimation;
+struct SwCanvas;
 }
 
 class ThorVGWidget final : public QWidget {
@@ -20,6 +19,7 @@ public:
 
   bool setSource(const QString &filePath);
   QString errorString() const;
+  void setTransparentBackground(bool enabled);
 
   void play();
   void pause();
@@ -27,8 +27,6 @@ public:
   bool isPlaying() const;
   void setLooping(bool enabled);
   bool isLooping() const;
-  bool setPlaybackSpeed(float speed);
-  float playbackSpeed() const;
   bool seekFrame(float frameNumber);
   float currentFrame() const;
   float totalFrames() const;
@@ -45,17 +43,16 @@ protected:
 private:
   bool initializeCanvas();
   bool renderFrame(float frameNumber);
+  void updateTimerInterval();
   void updateFrame();
   void setError(const QString &message);
 
   QTimer timer_;
-  QElapsedTimer playbackClock_;
-  qint64 playbackBaseMs_ = 0;
-  double playheadSeconds_ = 0.0;
-  float playbackSpeed_ = 1.0f;
+  double playbackFrame_ = 0.0;
   bool playing_ = false;
   bool looping_ = true;
   bool thorvgInitialized_ = false;
+  bool transparentBackground_ = false;
   QString errorString_;
   QImage frameBuffer_;
   std::unique_ptr<tvg::LottieAnimation> animation_;
